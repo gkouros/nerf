@@ -12,7 +12,9 @@ from run_nerf_helpers import *
 from load_llff import load_llff_data
 from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
-
+from tqdm.auto import tqdm
+# sys.path.append('../lpips-tensorflow')
+# import lpips_tf
 
 tf.compat.v1.enable_eager_execution()
 
@@ -125,7 +127,7 @@ def render_rays(ray_batch,
         # Extract RGB of each sample position along each ray.
         rgb = tf.math.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
 
-        # Add noise to model's predictions for density. Can be used to 
+        # Add noise to model's predictions for density. Can be used to
         # regularize network during training (prevents floater artifacts).
         noise = 0.
         if raw_noise_std > 0.:
@@ -277,7 +279,7 @@ def render(H, W, focal,
       near: float or array of shape [batch_size]. Nearest distance for a ray.
       far: float or array of shape [batch_size]. Farthest distance for a ray.
       use_viewdirs: bool. If True, use viewing direction of a point in space in model.
-      c2w_staticcam: array of shape [3, 4]. If not None, use this transformation matrix for 
+      c2w_staticcam: array of shape [3, 4]. If not None, use this transformation matrix for
        camera while using other c2w argument for viewing directions.
 
     Returns:
@@ -350,19 +352,19 @@ def render_path(render_poses, hwf, chunk, render_kwargs, gt_imgs=None, savedir=N
     disps = []
 
     t = time.time()
-    for i, c2w in enumerate(render_poses):
-        print(i, time.time() - t)
+    for i, c2w in tqdm(enumerate(render_poses), total=len(render_poses)):
+        # print(i, time.time() - t)
         t = time.time()
         rgb, disp, acc, _ = render(
             H, W, focal, chunk=chunk, c2w=c2w[:3, :4], **render_kwargs)
         rgbs.append(rgb.numpy())
         disps.append(disp.numpy())
-        if i == 0:
-            print(rgb.shape, disp.shape)
+        # if i == 0:
+            # print(rgb.shape, disp.shape)
 
         if gt_imgs is not None and render_factor == 0:
             p = -10. * np.log10(np.mean(np.square(rgb - gt_imgs[i])))
-            print(p)
+            # print(p)
 
         if savedir is not None:
             rgb8 = to8b(rgbs[-1])
@@ -497,12 +499,12 @@ def config_parser():
                         help='specific weights npy file to reload for coarse network')
     parser.add_argument("--random_seed", type=int, default=None,
                         help='fix random seed for repeatability')
-    
+
     # pre-crop options
     parser.add_argument("--precrop_iters", type=int, default=0,
                         help='number of steps to train on central crops')
     parser.add_argument("--precrop_frac", type=float,
-                        default=.5, help='fraction of img taken for central crops')    
+                        default=.5, help='fraction of img taken for central crops')
 
     # rendering options
     parser.add_argument("--N_samples", type=int, default=64,
@@ -532,7 +534,7 @@ def config_parser():
     # dataset options
     parser.add_argument("--dataset_type", type=str, default='llff',
                         help='options: llff / blender / deepvoxels')
-    parser.add_argument("--testskip", type=int, default=8,
+    parser.add_argument("--testskip", type=int, default=1,
                         help='will load 1/N images from test/val sets, useful for large datasets like deepvoxels')
 
     # deepvoxels flags
@@ -576,7 +578,7 @@ def train():
 
     parser = config_parser()
     args = parser.parse_args()
-    
+
     if args.random_seed is not None:
         print('Fixing random seed', args.random_seed)
         np.random.seed(args.random_seed)
@@ -695,10 +697,27 @@ def train():
 
         rgbs, _ = render_path(render_poses, hwf, args.chunk, render_kwargs_test,
                               gt_imgs=images, savedir=testsavedir, render_factor=args.render_factor)
+
+        # calculate PSNR
+        psnr = mse2psnr(img2mse(tf.constant(images), tf.constant(rgbs)))
+        print(f'PSNR: {psnr}')
+
+        # calculate SSIM
+        ssim = tf.image.ssim(tf.constant(images), tf.constant(rgbs), max_val=1).numpy().mean()
+        print(f'SSIM: {ssim}')
+
+        # calculate LPIPS
+        # tf.compat.v1.disable_eager_execution()
+        # image0_ph = tf.placeholder(tf.float32)
+        # image1_ph = tf.placeholder(tf.float32)
+        # distance_t = lpips_tf.lpips(image0_ph, image1_ph, model='net-lin', net='vgg')
+        # with tf.Session() as session:
+        #     lpips = session.run(distance_t, feed_dict={image0_ph: images, image1_ph: rgbs})
+        # print(f'LPIPS(VGG): {lpips}')
+
         print('Done rendering', testsavedir)
         imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'),
                          to8b(rgbs), fps=30, quality=8)
-
         return
 
     # Create optimizer
@@ -785,8 +804,8 @@ def train():
                     dH = int(H//2 * args.precrop_frac)
                     dW = int(W//2 * args.precrop_frac)
                     coords = tf.stack(tf.meshgrid(
-                        tf.range(H//2 - dH, H//2 + dH), 
-                        tf.range(W//2 - dW, W//2 + dW), 
+                        tf.range(H//2 - dH, H//2 + dH),
+                        tf.range(W//2 - dW, W//2 + dW),
                         indexing='ij'), -1)
                     if i < 10:
                         print('precrop', dH, dW, coords[0,0], coords[-1,-1])
@@ -893,7 +912,7 @@ def train():
                                                 **render_kwargs_test)
 
                 psnr = mse2psnr(img2mse(rgb, target))
-                
+
                 # Save out the validation image for Tensorboard-free monitoring
                 testimgdir = os.path.join(basedir, expname, 'tboard_val_imgs')
                 if i==0:
